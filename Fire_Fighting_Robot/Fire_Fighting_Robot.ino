@@ -1,7 +1,7 @@
 
 
 
-/*------ Arduino Fire Fighting Robot ---- */
+/*------ Arduino Fire Fighting Robot (with obstacle detection) ---- */
 #include <SoftwareSerial.h>   //include SoftwareSerial.h library
 #include <Servo.h>            //include servo.h library  
 
@@ -20,15 +20,20 @@ int mode=1;
 
 #define GAS_SENSOR 11    //Gas sensor
 
-#define Left 10      // left sensor
-#define Right 8    // right sensor
-#define Forward 9   //front sensor
+#define Left 10      // left flame/line sensor
+#define Right 8    // right flame/line sensor
+#define Forward 9   //front flame/line sensor
 
-#define RM1 4       // left motor
-#define RM2 5       // left motor
-#define LM1 6       // right motor
-#define LM2 7       // right motor
+#define RM1 4       // right motor pin 1
+#define RM2 5       // right motor pin 2
+#define LM1 6       // left motor pin 1
+#define LM2 7       // left motor pin 2
 #define pump 12
+
+// Ultrasonic sensor (HC-SR04) pins - using analog pins as digital I/O
+#define TRIG_PIN A0
+#define ECHO_PIN A1
+#define OBSTACLE_DISTANCE_CM 20  // threshold distance to consider as obstacle (in cm)
 
 SoftwareSerial BT_Serial(rxPinBluetooth,txPinBluetooth);
 
@@ -48,6 +53,10 @@ void setup()
   pinMode(LM1, OUTPUT);
   pinMode(LM2, OUTPUT);
   pinMode(pump, OUTPUT);
+
+  // Ultrasonic pins
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
  
   myservo.attach(13);
   myservo.write(90); 
@@ -79,36 +88,59 @@ void loop()
 
   if(mode==0){     
 //===============================================================================
-//                          Key Control
+//                          Manual (Key) Control with obstacle check
 //=============================================================================== 
-  if(bt_data == 1){ forward(); }  // if the bt_data is '1' the DC motor will go forward
-  else if(bt_data == 2){ backward(); }  // if the bt_data is '2' the motor will Reverse
-  else if(bt_data == 3){ turnLeft(); }  // if the bt_data is '3' the motor will turn left
-  else if(bt_data == 4){ turnRight(); } // if the bt_data is '4' the motor will turn right
-  else if(bt_data == 5){ Stop(); }
-  else if(bt_data == 6){put_off_fire();}
-  delay(10);
+    if(bt_data == 1){ // forward
+      int d = readUltrasonic();
+      if (d > 0 && d <= OBSTACLE_DISTANCE_CM) {
+        Serial.print("Obstacle detected in manual mode: ");
+        Serial.print(d);
+        Serial.println(" cm. Stopping.");
+        Stop();
+        // Optional avoidance in manual: back up slightly and turn
+        obstacleAvoidance();
+      } else {
+        forward();
+      }
+    }  
+    else if(bt_data == 2){ backward(); }  // if the bt_data is '2' the motor will Reverse
+    else if(bt_data == 3){ turnLeft(); }  // if the bt_data is '3' the motor will turn left
+    else if(bt_data == 4){ turnRight(); } // if the bt_data is '4' the motor will turn right
+    else if(bt_data == 5){ Stop(); }
+    else if(bt_data == 6){put_off_fire();}
+    delay(10);
   }
 //===============================================================================
-//                          Auto Control
+//                          Auto Control with obstacle detection
 //=============================================================================== 
   else{
-    if (digitalRead(Left) == 1 && digitalRead(Right)==1 && digitalRead(Forward) == 1) //không  phát hiện cháy
+    // read ultrasonic periodically
+    int distance = readUltrasonic();
+    if (distance > 0 && distance <= OBSTACLE_DISTANCE_CM)
+    {
+      Serial.print("Obstacle detected in auto mode: ");
+      Serial.print(distance);
+      Serial.println(" cm. Avoiding...");
+      obstacleAvoidance();
+      // after avoidance, continue loop and sensor-based fire detection will resume
+      return; // skip rest of this cycle so we don't mix motions
+    }
+
+    if (digitalRead(Left) == 1 && digitalRead(Right)==1 && digitalRead(Forward) == 1) // no fire detected
     {
       delay(500);
       Stop();
       delay(500);
     }
-    else if (digitalRead(Forward) == 0) // phát hiện cháy ở phía trước
+    else if (digitalRead(Forward) == 0) // fire detected at front
     {
       forward();
       fire = true;
     }
       
-    else if (digitalRead(Left) == 0){ turnLeft(); }  //phát hiện cháy ở phía bên trái
-      
-    else if (digitalRead(Right) == 0){ turnRight(); }  //phát hiện cháy ở phía bên phải
-    delay(200);//change this value to change the distance
+    else if (digitalRead(Left) == 0){ turnLeft(); }  //fire at left
+    else if (digitalRead(Right) == 0){ turnRight(); }  //fire at right
+    delay(200);//change this value to change the distance between checks
       
     if(digitalRead(GAS_SENSOR) == 0)
     {
@@ -144,6 +176,45 @@ void put_off_fire()
   digitalWrite(pump,HIGH);
   myservo.write(90); 
   fire=false;
+}
+
+
+
+void obstacleAvoidance()
+{
+  // Simple reactive obstacle avoidance:
+  // 1) stop, 2) back up a little, 3) turn right (you can change to left or implement checks)
+  Stop();
+  delay(100);
+  // back up
+  backward();
+  delay(400); // back up duration (ms) - tune to your robot
+  // turn right
+  turnRight();
+  delay(450); // turn duration (ms) - tune to your robot
+  Stop();
+  delay(150);
+}
+
+// Ultrasonic distance measurement (HC-SR04)
+int readUltrasonic()
+{
+  // send trigger pulse
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  // measure echo pulse (timeout 30000 us = 30 ms ~ max ~5m)
+  unsigned long duration = pulseIn(ECHO_PIN, HIGH, 30000);
+  if (duration == 0) {
+    // no echo / out of range
+    return -1;
+  }
+  // convert to cm (duration in microseconds)
+  int distanceCm = (int)(duration / 58.2);
+  return distanceCm;
 }
 
 void forward()  //forward
